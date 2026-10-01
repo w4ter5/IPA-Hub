@@ -20,9 +20,16 @@ jobs:
           sudo xcode-select -s /Applications/Xcode_26.3.0.app
 
       - name: Build
-        run: | 
+        run: |
           agvtool new-version -all $(git rev-parse HEAD)
           make
+
+      - name: Save IPA Hub build
+        uses: actions/upload-artifact@v4
+        with:
+          name: IPA-Hub
+          path: packages/IPA-Hub.ipa
+          if-no-files-found: error
 
       - name: Get Version
         id: get_version
@@ -34,7 +41,7 @@ jobs:
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v3.0.2
         with:
-          name: Feather v${{ env.VERSION }}
+          name: IPA Hub v${{ env.VERSION }}
           tag_name: v${{ env.VERSION }}
           files: |
             packages/*
