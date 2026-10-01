@@ -51,7 +51,7 @@ $(PLATFORMS): deps
 	mkdir -p packages
 
 	@if [ "$@" = "iphoneos" ]; then \
-		ditto -c -k --sequesterRsrc --keepParent _build/Payload "packages/Feather.ipa"; \
+		ditto -c -k --sequesterRsrc --keepParent _build/Payload "packages/IPA-Hub.ipa"; \
 	else \
 		ditto -c -k --sequesterRsrc --keepParent _build/Payload/Feather.app "packages/Feather_Catalyst.zip"; \
 	fi
