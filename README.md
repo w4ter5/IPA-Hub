@@ -18,7 +18,7 @@
 
 ## Сборка
 
-GitHub Actions → workflow **Release** → «Run workflow» (`workflow_dispatch`). Готовый файл — артефакт `IPA-Hub` (`IPA-Hub.ipa`, не подписан, ставится через eSign или другой подписчик). Локально: macOS + Xcode 26, `make`.
+GitHub Actions → workflow **Release** → «Run workflow» (`workflow_dispatch`). Готовый файл — артефакт `IPA-Hub` (`IPA-Hub.ipa`, не подписан, ставится через eSign или другой подписчик). Собирается только версия для iPhone (около 10 минут). Локально: macOS + Xcode 26, `make`.
 
 ### Что было сломано и что исправлено
 

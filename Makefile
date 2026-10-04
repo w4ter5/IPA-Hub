@@ -1,8 +1,7 @@
 NAME := Feather
 SCHEME := Feather
-# iphoneos last: the Release workflow reads the version from _build/Payload/*.app/Info.plist,
-# which only exists for the iOS layout (Mac Catalyst apps use Contents/Info.plist).
-PLATFORMS := maccatalyst iphoneos
+# IPA Hub ships for iPhone only (add maccatalyst back to also build Feather_Catalyst.zip).
+PLATFORMS := iphoneos
 
 TMP := $(TMPDIR)/$(NAME)
 CERT_JSON_URL := https://backloop.dev/pack.json
