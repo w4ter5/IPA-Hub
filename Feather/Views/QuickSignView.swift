@@ -1,314 +1,398 @@
+//
+//  QuickSignView.swift
+//  IPA Hub (based on Feather)
+//
+//  One screen for the whole flow: pick a certificate once, keep a list of
+//  sources, tap "Скачать и подписать", then save or share the signed IPA.
+//  The certificate and its password are stored by Feather's local
+//  certificate store on this device and are never uploaded anywhere.
+//
+
 import SwiftUI
 import CoreData
-import IDeviceSwift
-
-// Personal sources stay on this device. The signing certificate is managed by
-// Feather's existing local certificate store; it is never sent to GitHub.
-private struct QuickSource: Codable, Identifiable, Equatable {
-    enum Kind: String, Codable, CaseIterable {
-        case github = "GitHub Releases"
-        case direct = "Прямая ссылка на IPA"
-    }
-
-    var id = UUID()
-    var name: String
-    var address: String
-    var kind: Kind
-
-    func ipaURL(completion: @escaping (Result<URL, Error>) -> Void) {
-        guard let url = URL(string: address), url.scheme == "https" else {
-            completion(.failure(QuickSignError.invalidAddress))
-            return
-        }
-        if kind == .direct {
-            guard url.path.lowercased().hasSuffix(".ipa") else {
-                completion(.failure(QuickSignError.invalidIPA))
-                return
-            }
-            completion(.success(url))
-            return
-        }
-        guard url.host?.lowercased() == "github.com" else {
-            completion(.failure(QuickSignError.invalidRepository))
-            return
-        }
-        var parts = url.pathComponents.filter { $0 != "/" }
-        guard parts.count >= 2, parts[0] != ".", parts[1] != "." else {
-            completion(.failure(QuickSignError.invalidRepository))
-            return
-        }
-        if parts[1].hasSuffix(".git") { parts[1].removeLast(4) }
-        let apiURL = URL(string: "https://api.github.com/repos/\(parts[0])/\(parts[1])/releases/latest")!
-        var request = URLRequest(url: apiURL)
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            if let error { completion(.failure(error)); return }
-            guard let response = response as? HTTPURLResponse, response.statusCode == 200,
-                  let data,
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let assets = object["assets"] as? [[String: Any]],
-                  let asset = assets.first(where: { ($0["name"] as? String)?.lowercased().hasSuffix(".ipa") == true }),
-                  let link = asset["browser_download_url"] as? String,
-                  let ipaURL = URL(string: link), ipaURL.scheme == "https" else {
-                completion(.failure(QuickSignError.noReleaseIPA))
-                return
-            }
-            completion(.success(ipaURL))
-        }.resume()
-    }
-}
-
-private enum QuickSignError: LocalizedError {
-    case invalidAddress, invalidRepository, invalidIPA, noReleaseIPA, badDownload, noCertificate, noImportedApp, noSignedApp
-
-    var errorDescription: String? {
-        switch self {
-        case .invalidAddress: return "Введите ссылку HTTPS."
-        case .invalidRepository: return "Введите адрес вида https://github.com/владелец/репозиторий."
-        case .invalidIPA: return "Прямая ссылка должна вести на файл .ipa."
-        case .noReleaseIPA: return "В последнем GitHub Release нет файла IPA или релиз недоступен."
-        case .badDownload: return "По ссылке скачался не IPA. Проверьте адрес и доступ к файлу."
-        case .noCertificate: return "Сначала добавьте сертификат и профиль."
-        case .noImportedApp: return "Не удалось найти импортированное приложение."
-        case .noSignedApp: return "Не удалось найти подписанное приложение."
-        }
-    }
-}
 
 struct QuickSignView: View {
-    @AppStorage("ipaHub.sources") private var storedSources = ""
-    @AppStorage("feather.selectedCert") private var selectedCertificate = 0
-    @State private var sources: [QuickSource] = []
-    @State private var showingSourceEditor = false
-    @State private var showingCertificateImporter = false
-    @State private var name = ""
-    @State private var address = ""
-    @State private var kind: QuickSource.Kind = .github
-    @State private var busy = false
-    @State private var status = ""
-    @State private var errorMessage: String?
-    @State private var signedIPA: URL?
+	@AppStorage("ipaHub.sources") private var _storedSources = ""
+	@AppStorage("ipaHub.results") private var _storedResults = ""
+	@AppStorage("feather.selectedCert") private var _selectedCertificate = 0
 
-    @FetchRequest(
-        entity: CertificatePair.entity(),
-        sortDescriptors: [NSSortDescriptor(keyPath: \CertificatePair.date, ascending: false)]
-    ) private var certificates: FetchedResults<CertificatePair>
+	@State private var _sources: [IPAHubSource] = []
+	@State private var _results: [UUID: String] = [:]
+	@State private var _isAddingSource = false
+	@State private var _isAddingCertificate = false
+	@State private var _activeSource: UUID?
+	@State private var _stage: IPAHubStage?
+	@State private var _lastMessage: String?
+	@State private var _errorMessage: String?
+	@State private var _task: Task<Void, Never>?
 
-    var body: some View {
-        NavigationStack {
-            List {
-                Section("Сертификат") {
-                    if certificates.isEmpty {
-                        Button("Добавить .p12 и .mobileprovision") { showingCertificateImporter = true }
-                    } else {
-                        Picker("Использовать", selection: $selectedCertificate) {
-                            ForEach(Array(certificates.enumerated()), id: \.offset) { index, certificate in
-                                Text(certificate.nickname ?? "Сертификат \(index + 1)").tag(index)
-                            }
-                        }
-                        Button("Добавить другой сертификат") { showingCertificateImporter = true }
-                    }
-                }
+	@FetchRequest(
+		entity: CertificatePair.entity(),
+		sortDescriptors: [NSSortDescriptor(keyPath: \CertificatePair.date, ascending: false)]
+	) private var _certificates: FetchedResults<CertificatePair>
 
-                Section("Источники IPA") {
-                    if sources.isEmpty {
-                        Text("Добавьте GitHub-репозиторий или прямую ссылку на IPA.")
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(sources) { source in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(source.name).font(.headline)
-                            Text(source.address).font(.caption).foregroundStyle(.secondary)
-                                .lineLimit(2)
-                            Button("Скачать и подписать") { start(source) }
-                                .disabled(busy || certificates.isEmpty)
-                        }
-                        .padding(.vertical, 4)
-                    }
-                    .onDelete { offsets in
-                        sources.remove(atOffsets: offsets)
-                        saveSources()
-                    }
-                    Button("Добавить источник") {
-                        name = ""
-                        address = ""
-                        kind = .github
-                        showingSourceEditor = true
-                    }
-                }
+	private var _isBusy: Bool { _activeSource != nil }
 
-                if busy || !status.isEmpty {
-                    Section("Состояние") {
-                        if busy { ProgressView() }
-                        Text(status)
-                    }
-                }
-                if let signedIPA {
-                    Section("Готовый файл") {
-                        ShareLink(item: signedIPA) {
-                            Label("Сохранить или отправить подписанный IPA", systemImage: "square.and.arrow.up")
-                        }
-                    }
-                }
-            }
-            .navigationTitle("IPA Hub")
-            .onAppear(perform: loadSources)
-            .sheet(isPresented: $showingCertificateImporter) { CertificatesAddView() }
-            .sheet(isPresented: $showingSourceEditor) { sourceEditor }
-            .alert("Ошибка", isPresented: Binding(
-                get: { errorMessage != nil },
-                set: { if !$0 { errorMessage = nil } }
-            )) {
-                Button("ОК") { errorMessage = nil }
-            } message: {
-                Text(errorMessage ?? "")
-            }
-        }
-    }
+	private var _certificate: CertificatePair? {
+		_certificates.indices.contains(_selectedCertificate) ? _certificates[_selectedCertificate] : nil
+	}
 
-    private var sourceEditor: some View {
-        NavigationStack {
-            Form {
-                Picker("Тип", selection: $kind) {
-                    ForEach(QuickSource.Kind.allCases, id: \.self) { value in
-                        Text(value.rawValue).tag(value)
-                    }
-                }
-                TextField("Название", text: $name)
-                TextField(kind == .github ? "https://github.com/owner/repo" : "https://example.com/app.ipa", text: $address)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-            }
-            .navigationTitle("Новый источник")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Отмена") { showingSourceEditor = false }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Сохранить") {
-                        let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard let url = URL(string: trimmed), url.scheme == "https",
-                              kind != .github || (url.host?.lowercased() == "github.com" && url.pathComponents.count >= 3),
-                              kind != .direct || url.path.lowercased().hasSuffix(".ipa") else {
-                            errorMessage = QuickSignError.invalidAddress.localizedDescription
-                            return
-                        }
-                        sources.append(QuickSource(name: name.isEmpty ? (url.host ?? "IPA") : name, address: trimmed, kind: kind))
-                        saveSources()
-                        showingSourceEditor = false
-                    }
-                }
-            }
-        }
-    }
+	// MARK: Body
+	var body: some View {
+		NavigationStack {
+			List {
+				_certificateSection
+				_sourcesSection
+				if let message = _lastMessage, !_isBusy {
+					Section("Состояние") { Text(message) }
+				}
+			}
+			.navigationTitle("IPA Hub")
+			.toolbar {
+				if _sources.count > 1 { EditButton().disabled(_isBusy) }
+			}
+			.onAppear(perform: _load)
+			.onChange(of: _certificates.count) { _ in
+				// A newly imported certificate is the newest one (index 0).
+				if !_certificates.indices.contains(_selectedCertificate) || _isAddingCertificate {
+					_selectedCertificate = 0
+				}
+			}
+			.sheet(isPresented: $_isAddingCertificate) { CertificatesAddView() }
+			.sheet(isPresented: $_isAddingSource) {
+				IPAHubAddSourceView(existing: _sources) { source in
+					_sources.append(source)
+					_saveSources()
+				}
+			}
+			.alert("Ошибка", isPresented: Binding(
+				get: { _errorMessage != nil },
+				set: { if !$0 { _errorMessage = nil } }
+			)) {
+				Button("ОК", role: .cancel) { _errorMessage = nil }
+			} message: {
+				Text(_errorMessage ?? "")
+			}
+		}
+	}
 
-    private func loadSources() {
-        if storedSources.isEmpty {
-            sources = [QuickSource(name: "Shadow", address: "https://github.com/folzy1092/Shadow", kind: .github)]
-            saveSources()
-        } else if let data = storedSources.data(using: .utf8),
-                  let saved = try? JSONDecoder().decode([QuickSource].self, from: data) {
-            sources = saved
-        }
-    }
+	// MARK: Sections
 
-    private func saveSources() {
-        guard let data = try? JSONEncoder().encode(sources),
-              let string = String(data: data, encoding: .utf8) else { return }
-        storedSources = string
-    }
+	@ViewBuilder
+	private var _certificateSection: some View {
+		Section {
+			if _certificates.isEmpty {
+				Button {
+					_isAddingCertificate = true
+				} label: {
+					Label("Добавить .p12 и .mobileprovision", systemImage: "person.badge.key")
+				}
+			} else {
+				Picker("Сертификат", selection: $_selectedCertificate) {
+					ForEach(Array(_certificates.enumerated()), id: \.offset) { index, certificate in
+						Text(_certificateTitle(certificate, index: index)).tag(index)
+					}
+				}
+				.disabled(_isBusy)
+				if let certificate = _certificate, let expiration = certificate.expiration {
+					LabeledContent("Действует до") {
+						Text(expiration, style: .date)
+							.foregroundStyle(expiration < Date() ? .red : .secondary)
+					}
+				}
+				Button("Добавить другой сертификат") { _isAddingCertificate = true }
+					.disabled(_isBusy)
+			}
+		} header: {
+			Text("Сертификат")
+		} footer: {
+			Text("Файлы сертификата и пароль хранятся только в этом приложении на iPhone.")
+		}
+	}
 
-    private func fail(_ error: Error) {
-        busy = false
-        status = ""
-        errorMessage = error.localizedDescription
-    }
+	@ViewBuilder
+	private var _sourcesSection: some View {
+		Section {
+			if _sources.isEmpty {
+				Text("Добавьте GitHub-репозиторий или прямую ссылку на IPA.")
+					.foregroundStyle(.secondary)
+			}
+			ForEach(_sources) { source in
+				_sourceRow(source)
+			}
+			.onDelete { offsets in
+				guard !_isBusy else { return }
+				for index in offsets { _removeResult(for: _sources[index].id) }
+				_sources.remove(atOffsets: offsets)
+				_saveSources()
+			}
+			.onMove { from, to in
+				_sources.move(fromOffsets: from, toOffset: to)
+				_saveSources()
+			}
+			Button {
+				_isAddingSource = true
+			} label: {
+				Label("Добавить источник", systemImage: "plus")
+			}
+			.disabled(_isBusy)
+		} header: {
+			Text("Источники IPA")
+		} footer: {
+			Text("Для GitHub берётся файл .ipa из последнего опубликованного Release (без черновиков и пре-релизов). Поддерживаются только публичные репозитории и ссылки без авторизации.")
+		}
+	}
 
-    private func start(_ source: QuickSource) {
-        guard certificates.indices.contains(selectedCertificate) else {
-            fail(QuickSignError.noCertificate)
-            return
-        }
-        let certificate = certificates[selectedCertificate]
-        busy = true
-        status = "Ищу IPA…"
-        signedIPA = nil
-        source.ipaURL { result in
-            DispatchQueue.main.async {
-                switch result {
-                case .failure(let error): fail(error)
-                case .success(let url): download(url, certificate: certificate)
-                }
-            }
-        }
-    }
+	private func _sourceRow(_ source: IPAHubSource) -> some View {
+		VStack(alignment: .leading, spacing: 8) {
+			HStack {
+				Image(systemName: source.kind == .github ? "shippingbox" : "link")
+					.foregroundStyle(.secondary)
+				Text(source.name).font(.headline)
+			}
+			Text(source.address)
+				.font(.caption)
+				.foregroundStyle(.secondary)
+				.lineLimit(2)
+				.textSelection(.enabled)
 
-    private func download(_ url: URL, certificate: CertificatePair) {
-        status = "Скачиваю IPA…"
-        URLSession.shared.downloadTask(with: url) { temporaryURL, _, error in
-            if let error { DispatchQueue.main.async { fail(error) }; return }
-            guard let temporaryURL else {
-                DispatchQueue.main.async { fail(QuickSignError.badDownload) }
-                return
-            }
-            let copy = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".ipa")
-            do {
-                let handle = try FileHandle(forReadingFrom: temporaryURL)
-                let header = handle.readData(ofLength: 4)
-                try handle.close()
-                guard header.starts(with: [0x50, 0x4b]) else { throw QuickSignError.badDownload }
-                try FileManager.default.copyItem(at: temporaryURL, to: copy)
-                DispatchQueue.main.async { importAndSign(copy, certificate: certificate) }
-            } catch {
-                DispatchQueue.main.async { fail(error) }
-            }
-        }.resume()
-    }
+			if _activeSource == source.id, let stage = _stage {
+				HStack(spacing: 8) {
+					if case .downloading(let progress?) = stage {
+						ProgressView(value: progress)
+					} else {
+						ProgressView()
+					}
+					Text(stage.title).font(.footnote)
+				}
+				Button("Отменить", role: .destructive) { _task?.cancel() }
+					.buttonStyle(.borderless)
+			} else {
+				HStack {
+					Button {
+						_start(source)
+					} label: {
+						Label("Скачать и подписать", systemImage: "signature")
+					}
+					.buttonStyle(.borderedProminent)
+					.disabled(_isBusy || _certificate == nil)
 
-    private func importAndSign(_ ipa: URL, certificate: CertificatePair) {
-        status = "Подготавливаю IPA…"
-        let started = Date()
-        FR.handlePackageFile(ipa) { error in
-            try? FileManager.default.removeItem(at: ipa)
-            if let error { fail(error); return }
-            let request: NSFetchRequest<Imported> = Imported.fetchRequest()
-            request.sortDescriptors = [NSSortDescriptor(keyPath: \Imported.date, ascending: false)]
-            guard let imported = try? Storage.shared.context.fetch(request).first,
-                  (imported.date ?? .distantPast) >= started.addingTimeInterval(-2) else {
-                fail(QuickSignError.noImportedApp)
-                return
-            }
-            status = "Подписываю на iPhone…"
-            FR.signPackageFile(imported, using: OptionsManager.shared.options, icon: nil, certificate: certificate) { error in
-                if let error { fail(error); return }
-                packageSignedApp()
-            }
-        }
-    }
+					if let file = _resultFile(for: source.id) {
+						ShareLink(item: file) {
+							Label("Поделиться", systemImage: "square.and.arrow.up")
+						}
+						.buttonStyle(.bordered)
+						.disabled(_isBusy)
+					}
+				}
+				if let file = _resultFile(for: source.id) {
+					Text(file.lastPathComponent)
+						.font(.caption2)
+						.foregroundStyle(.secondary)
+				}
+			}
+		}
+		.padding(.vertical, 4)
+	}
 
-    private func packageSignedApp() {
-        status = "Собираю подписанный IPA…"
-        let request: NSFetchRequest<Signed> = Signed.fetchRequest()
-        request.sortDescriptors = [NSSortDescriptor(keyPath: \Signed.date, ascending: false)]
-        guard let signed = try? Storage.shared.context.fetch(request).first else {
-            fail(QuickSignError.noSignedApp)
-            return
-        }
-        Task {
-            do {
-                let handler = ArchiveHandler(app: signed, viewModel: InstallerStatusViewModel())
-                try await handler.move()
-                let archive = try await handler.archive()
-                try FileManager.default.createDirectory(at: FileManager.default.archives, withIntermediateDirectories: true)
-                let destination = FileManager.default.archives.appendingPathComponent("Signed-\(UUID().uuidString).ipa")
-                try FileManager.default.copyItem(at: archive, to: destination)
-                signedIPA = destination
-                status = "Готово: IPA подписан и сохранён на этом iPhone."
-                busy = false
-            } catch {
-                fail(error)
-            }
-        }
-    }
+
+	// MARK: Actions
+
+	private func _start(_ source: IPAHubSource) {
+		guard let certificate = _certificate else {
+			_errorMessage = IPAHubError.noCertificate.localizedDescription
+			return
+		}
+		_activeSource = source.id
+		_stage = .resolving
+		_lastMessage = nil
+
+		_task = Task { @MainActor in
+			do {
+				let result = try await IPAHubPipeline.run(source: source, certificate: certificate) { stage in
+					_stage = stage
+				}
+				_results[source.id] = result.signedIPA.lastPathComponent
+				_saveResults()
+				let release = result.tag.map { " (релиз \($0))" } ?? ""
+				let version = result.version.map { " \($0)" } ?? ""
+				_lastMessage = "Готово: \(result.appName)\(version)\(release) подписан. Нажмите «Поделиться», чтобы сохранить файл или открыть его в другом приложении."
+			} catch is CancellationError {
+				_lastMessage = "Отменено."
+			} catch let error as URLError where error.code == .cancelled {
+				_lastMessage = "Отменено."
+			} catch {
+				_lastMessage = nil
+				_errorMessage = error.localizedDescription
+			}
+			_stage = nil
+			_activeSource = nil
+			_task = nil
+		}
+	}
+
+	// MARK: Persistence
+
+	private func _load() {
+		if _storedSources.isEmpty {
+			_sources = [.shadow]
+			_saveSources()
+		} else if
+			let data = _storedSources.data(using: .utf8),
+			let saved = try? JSONDecoder().decode([IPAHubSource].self, from: data)
+		{
+			_sources = saved
+		} else {
+			_sources = _migrateLegacySources() ?? [.shadow]
+			_saveSources()
+		}
+
+		if
+			let data = _storedResults.data(using: .utf8),
+			let saved = try? JSONDecoder().decode([UUID: String].self, from: data)
+		{
+			_results = saved
+		}
+	}
+
+	/// Sources saved by the first IPA Hub prototype used a different shape.
+	private func _migrateLegacySources() -> [IPAHubSource]? {
+		struct Legacy: Decodable { var name: String; var address: String }
+		guard
+			let data = _storedSources.data(using: .utf8),
+			let legacy = try? JSONDecoder().decode([Legacy].self, from: data)
+		else {
+			return nil
+		}
+		return legacy.compactMap { try? IPAHubSource.make(name: $0.name, input: $0.address) }
+	}
+
+	private func _saveSources() {
+		guard
+			let data = try? JSONEncoder().encode(_sources),
+			let string = String(data: data, encoding: .utf8)
+		else {
+			return
+		}
+		_storedSources = string
+	}
+
+	private func _saveResults() {
+		guard
+			let data = try? JSONEncoder().encode(_results),
+			let string = String(data: data, encoding: .utf8)
+		else {
+			return
+		}
+		_storedResults = string
+	}
+
+	private func _resultFile(for id: UUID) -> URL? {
+		guard let name = _results[id] else { return nil }
+		let url = FileManager.default.archives
+			.appendingPathComponent("IPA Hub", isDirectory: true)
+			.appendingPathComponent(name)
+		return FileManager.default.fileExists(atPath: url.path) ? url : nil
+	}
+
+	private func _removeResult(for id: UUID) {
+		_results[id] = nil
+		_saveResults()
+	}
+
+	private func _certificateTitle(_ certificate: CertificatePair, index: Int) -> String {
+		if let nickname = certificate.nickname, !nickname.isEmpty { return nickname }
+		if let name = Storage.shared.getProvisionFileDecoded(for: certificate)?.Name { return name }
+		return "Сертификат \(index + 1)"
+	}
+}
+
+// MARK: - Add source
+
+struct IPAHubAddSourceView: View {
+	@Environment(\.dismiss) private var dismiss
+
+	let existing: [IPAHubSource]
+	let onSave: (IPAHubSource) -> Void
+
+	@State private var _name = ""
+	@State private var _address = ""
+	@State private var _errorMessage: String?
+	@State private var _isChecking = false
+	@State private var _checkResult: String?
+
+	var body: some View {
+		NavigationStack {
+			Form {
+				Section {
+					TextField("https://github.com/владелец/репозиторий", text: $_address)
+						.textInputAutocapitalization(.never)
+						.autocorrectionDisabled()
+						.keyboardType(.URL)
+					TextField("Название (необязательно)", text: $_name)
+				} footer: {
+					Text("Ссылка на публичный GitHub-репозиторий (IPA берётся из последнего Release) или прямая HTTPS-ссылка на файл .ipa.")
+				}
+
+				if _isChecking {
+					Section { HStack { ProgressView(); Text("Проверяю…") } }
+				} else if let _checkResult {
+					Section { Text(_checkResult).font(.footnote) }
+				}
+				if let _errorMessage {
+					Section { Text(_errorMessage).foregroundStyle(.red).font(.footnote) }
+				}
+			}
+			.navigationTitle("Новый источник")
+			.navigationBarTitleDisplayMode(.inline)
+			.toolbar {
+				ToolbarItem(placement: .cancellationAction) {
+					Button("Отмена") { dismiss() }
+				}
+				ToolbarItem(placement: .confirmationAction) {
+					Button("Сохранить") { _save() }
+						.disabled(_address.trimmingCharacters(in: .whitespaces).isEmpty || _isChecking)
+				}
+			}
+		}
+	}
+
+	private func _save() {
+		_errorMessage = nil
+		_checkResult = nil
+		let source: IPAHubSource
+		do {
+			source = try IPAHubSource.make(name: _name, input: _address)
+		} catch {
+			_errorMessage = error.localizedDescription
+			return
+		}
+		guard !existing.contains(where: { $0.address.caseInsensitiveCompare(source.address) == .orderedSame }) else {
+			_errorMessage = IPAHubError.duplicateSource.localizedDescription
+			return
+		}
+		guard source.kind == .github else {
+			onSave(source)
+			dismiss()
+			return
+		}
+		// Check that the repository has a release with an IPA right away,
+		// so problems show up now and not on the first download.
+		_isChecking = true
+		Task { @MainActor in
+			defer { _isChecking = false }
+			do {
+				let resolved = try await IPAHubResolver.resolve(source)
+				_checkResult = "Найден \(resolved.fileName) в релизе \(resolved.tag ?? "")."
+				onSave(source)
+				dismiss()
+			} catch let error as IPAHubError where error == .rateLimited {
+				// Can't verify right now; keep the source anyway.
+				onSave(source)
+				dismiss()
+			} catch {
+				_errorMessage = error.localizedDescription
+			}
+		}
+	}
 }

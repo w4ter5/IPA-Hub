@@ -14,6 +14,8 @@ final class AppFileHandler: NSObject, @unchecked Sendable {
 	private let _uuid = UUID().uuidString
 	private let _uniqueWorkDir: URL
 	var uniqueWorkDirPayload: URL?
+	/// UUID of the `Imported` record created by `addToDatabase()`.
+	var uuid: String { _uuid }
 
 	private var _ipa: URL
 	private let _install: Bool

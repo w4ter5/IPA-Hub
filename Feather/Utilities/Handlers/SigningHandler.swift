@@ -28,6 +28,8 @@ final class SigningHandler: NSObject {
 	// throw an error
 	var appIcon: UIImage?
 	var appCertificate: CertificatePair?
+	/// UUID of the `Signed` record created by `addToDatabase()`.
+	var uuid: String { _uuid }
 	
 	init(app: AppInfoPresentable, options: Options = OptionsManager.shared.options) {
 		self._app = app
