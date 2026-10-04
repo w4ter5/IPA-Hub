@@ -162,7 +162,7 @@ enum IPAHubPipeline {
 
 	private static func package(_ signed: Signed, source: IPAHubSource) async throws -> URL {
 		let viewModel = await MainActor.run { InstallerStatusViewModel(isIdevice: false) }
-		let handler = ArchiveHandler(app: signed, viewModel: viewModel)
+		let handler = await ArchiveHandler(app: signed, viewModel: viewModel)
 		try await handler.move()
 		let archive = try await handler.archive()
 		defer { try? FileManager.default.removeItem(at: archive.deletingLastPathComponent()) }
