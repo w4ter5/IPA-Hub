@@ -32,6 +32,8 @@ enum IPAHubStage: Equatable {
 
 struct IPAHubResult {
 	var signedIPA: URL
+	/// UUID of the signed app in Feather's Library (used to install it).
+	var signedUUID: String?
 	var appName: String
 	var version: String?
 	var tag: String?
@@ -73,6 +75,7 @@ enum IPAHubPipeline {
 
 		return IPAHubResult(
 			signedIPA: output,
+			signedUUID: signed.uuid,
 			appName: signed.name ?? source.name,
 			version: signed.version,
 			tag: resolved.tag

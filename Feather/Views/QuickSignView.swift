@@ -3,7 +3,8 @@
 //  IPA Hub (based on Feather)
 //
 //  One screen for the whole flow: pick a certificate once, keep a list of
-//  sources, tap "Скачать и подписать", then save or share the signed IPA.
+//  sources, tap "Скачать и подписать", then install the signed app on this
+//  iPhone (Feather's installer) or save/share the signed IPA.
 //  The certificate and its password are stored by Feather's local
 //  certificate store on this device and are never uploaded anywhere.
 //
@@ -14,10 +15,15 @@ import CoreData
 struct QuickSignView: View {
 	@AppStorage("ipaHub.sources") private var _storedSources = ""
 	@AppStorage("ipaHub.results") private var _storedResults = ""
+	@AppStorage("ipaHub.signedApps") private var _storedSignedApps = ""
+	@AppStorage("ipaHub.installAfterSigning") private var _installAfterSigning = true
 	@AppStorage("feather.selectedCert") private var _selectedCertificate = 0
 
 	@State private var _sources: [IPAHubSource] = []
 	@State private var _results: [UUID: String] = [:]
+	/// Source id → UUID of the signed app in Feather's Library.
+	@State private var _signedApps: [UUID: String] = [:]
+	@State private var _installApp: AnyApp?
 	@State private var _isAddingSource = false
 	@State private var _isAddingCertificate = false
 	@State private var _activeSource: UUID?
@@ -43,6 +49,11 @@ struct QuickSignView: View {
 			List {
 				_certificateSection
 				_sourcesSection
+				Section {
+					Toggle("Устанавливать сразу после подписи", isOn: $_installAfterSigning)
+				} footer: {
+					Text("После подписи iOS спросит, установить ли приложение. Его также можно установить кнопкой «Установить» или из «Библиотеки».")
+				}
 				if let message = _lastMessage, !_isBusy {
 					Section("Состояние") { Text(message) }
 				}
@@ -59,6 +70,11 @@ struct QuickSignView: View {
 				}
 			}
 			.sheet(isPresented: $_isAddingCertificate) { CertificatesAddView() }
+			.sheet(item: $_installApp) { app in
+				InstallPreviewView(app: app.base)
+					.presentationDetents([.height(200)])
+					.presentationDragIndicator(.visible)
+			}
 			.sheet(isPresented: $_isAddingSource) {
 				IPAHubAddSourceView(existing: _sources) { source in
 					_sources.append(source)
@@ -122,7 +138,11 @@ struct QuickSignView: View {
 			}
 			.onDelete { offsets in
 				guard !_isBusy else { return }
-				for index in offsets { _removeResult(for: _sources[index].id) }
+				for index in offsets {
+					_removeResult(for: _sources[index].id)
+					_signedApps[_sources[index].id] = nil
+				}
+				_saveSignedApps()
 				_sources.remove(atOffsets: offsets)
 				_saveSources()
 			}
@@ -177,6 +197,16 @@ struct QuickSignView: View {
 					.buttonStyle(.borderedProminent)
 					.disabled(_isBusy || _certificate == nil)
 
+					if let app = _signedApp(for: source.id) {
+						Button {
+							_installApp = AnyApp(base: app)
+						} label: {
+							Label("Установить", systemImage: "arrow.down.app")
+						}
+						.buttonStyle(.bordered)
+						.disabled(_isBusy)
+					}
+
 					if let file = _resultFile(for: source.id) {
 						ShareLink(item: file) {
 							Label("Поделиться", systemImage: "square.and.arrow.up")
@@ -214,9 +244,14 @@ struct QuickSignView: View {
 				}
 				_results[source.id] = result.signedIPA.lastPathComponent
 				_saveResults()
+				_signedApps[source.id] = result.signedUUID
+				_saveSignedApps()
 				let release = result.tag.map { " (релиз \($0))" } ?? ""
 				let version = result.version.map { " \($0)" } ?? ""
-				_lastMessage = "Готово: \(result.appName)\(version)\(release) подписан. Нажмите «Поделиться», чтобы сохранить файл или открыть его в другом приложении."
+				_lastMessage = "Готово: \(result.appName)\(version)\(release) подписан. Нажмите «Установить», чтобы поставить его на iPhone, или «Поделиться», чтобы сохранить файл."
+				if _installAfterSigning, let app = _signedApp(for: source.id) {
+					_installApp = AnyApp(base: app)
+				}
 			} catch is CancellationError {
 				_lastMessage = "Отменено."
 			} catch let error as URLError where error.code == .cancelled {
@@ -253,6 +288,13 @@ struct QuickSignView: View {
 		{
 			_results = saved
 		}
+
+		if
+			let data = _storedSignedApps.data(using: .utf8),
+			let saved = try? JSONDecoder().decode([UUID: String].self, from: data)
+		{
+			_signedApps = saved
+		}
 	}
 
 	/// Sources saved by the first IPA Hub prototype used a different shape.
@@ -285,6 +327,25 @@ struct QuickSignView: View {
 			return
 		}
 		_storedResults = string
+	}
+
+	private func _saveSignedApps() {
+		guard
+			let data = try? JSONEncoder().encode(_signedApps),
+			let string = String(data: data, encoding: .utf8)
+		else {
+			return
+		}
+		_storedSignedApps = string
+	}
+
+	/// The signed app from the last run, if it is still in Feather's Library.
+	private func _signedApp(for id: UUID) -> Signed? {
+		guard let uuid = _signedApps[id] else { return nil }
+		let request: NSFetchRequest<Signed> = Signed.fetchRequest()
+		request.predicate = NSPredicate(format: "uuid == %@", uuid)
+		request.fetchLimit = 1
+		return try? Storage.shared.context.fetch(request).first
 	}
 
 	private func _resultFile(for id: UUID) -> URL? {
