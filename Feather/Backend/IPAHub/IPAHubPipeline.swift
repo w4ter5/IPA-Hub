@@ -116,6 +116,17 @@ enum IPAHubPipeline {
 		var options = await MainActor.run { OptionsManager.shared.options }
 		options.signingOption = .default
 
+		// Same per-app adjustments as SigningView applies before signing.
+		if options.ppqProtection, let identifier = app.identifier, certificate.ppQCheck {
+			options.appIdentifier = "\(identifier).\(options.ppqString)"
+		}
+		if let identifier = app.identifier, let newIdentifier = options.identifiers[identifier] {
+			options.appIdentifier = newIdentifier
+		}
+		if let name = app.name, let newName = options.displayNames[name] {
+			options.appName = newName
+		}
+
 		let handler = SigningHandler(app: app, options: options)
 		handler.appCertificate = certificate
 
