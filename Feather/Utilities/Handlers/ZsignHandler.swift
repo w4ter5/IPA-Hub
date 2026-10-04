@@ -44,7 +44,10 @@ final class ZsignHandler {
 			throw SigningFileHandlerError.missingCertifcate
 		}
 
-		let _ = Zsign.sign(
+		// zsign returns false without calling `completion` when it can't load
+		// the certificate (e.g. wrong .p12 password); treat that as a failure
+		// instead of reporting an unsigned app as signed.
+		let didStart = Zsign.sign(
 			appPath: _appUrl.relativePath,
 			provisionPath: Storage.shared.getFile(.provision, from: cert)?.path ?? "",
 			p12Path: Storage.shared.getFile(.certificate, from: cert)?.path ?? "",
@@ -57,6 +60,9 @@ final class ZsignHandler {
 				}
 			}
 		)
+		if !didStart {
+			hadError = SigningFileHandlerError.signFailed
+		}
 	}
 	
 	func adhocSign() async throws {
