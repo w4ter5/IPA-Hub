@@ -17,6 +17,7 @@ struct QuickSignView: View {
 	@AppStorage("ipaHub.results") private var _storedResults = ""
 	@AppStorage("ipaHub.signedApps") private var _storedSignedApps = ""
 	@AppStorage("ipaHub.installAfterSigning") private var _installAfterSigning = true
+	@AppStorage("ipaHub.sslRefreshedAt") private var _sslRefreshedAt: Double = 0
 	@AppStorage("feather.selectedCert") private var _selectedCertificate = 0
 
 	@State private var _sources: [IPAHubSource] = []
@@ -164,7 +165,7 @@ struct QuickSignView: View {
 	}
 
 	private func _sourceRow(_ source: IPAHubSource) -> some View {
-		VStack(alignment: .leading, spacing: 8) {
+		VStack(alignment: .leading, spacing: 10) {
 			HStack {
 				Image(systemName: source.kind == .github ? "shippingbox" : "link")
 					.foregroundStyle(.secondary)
@@ -177,48 +178,64 @@ struct QuickSignView: View {
 				.textSelection(.enabled)
 
 			if _activeSource == source.id, let stage = _stage {
-				HStack(spacing: 8) {
-					if case .downloading(let progress?) = stage {
-						ProgressView(value: progress)
-					} else {
-						ProgressView()
-					}
-					Text(stage.title).font(.footnote)
+				// One fixed layout for every stage so the row doesn't jump around.
+				VStack(alignment: .leading, spacing: 6) {
+					Text(stage.title)
+						.font(.footnote)
+						.monospacedDigit()
+						.lineLimit(1)
+					ProgressView(value: stage.fraction)
+						.animation(.linear(duration: 0.2), value: stage.fraction)
 				}
-				Button("Отменить", role: .destructive) { _task?.cancel() }
-					.buttonStyle(.borderless)
+				Button(role: .destructive) {
+					_task?.cancel()
+				} label: {
+					Text("Отменить").frame(maxWidth: .infinity)
+				}
+				.buttonStyle(.bordered)
+				.controlSize(.large)
 			} else {
-				HStack {
-					Button {
-						_start(source)
-					} label: {
-						Label("Скачать и подписать", systemImage: "signature")
-					}
-					.buttonStyle(.borderedProminent)
-					.disabled(_isBusy || _certificate == nil)
-
-					if let app = _signedApp(for: source.id) {
-						Button {
-							_installApp = AnyApp(base: app)
-						} label: {
-							Label("Установить", systemImage: "arrow.down.app")
-						}
-						.buttonStyle(.bordered)
-						.disabled(_isBusy)
-					}
-
-					if let file = _resultFile(for: source.id) {
-						ShareLink(item: file) {
-							Label("Поделиться", systemImage: "square.and.arrow.up")
-						}
-						.buttonStyle(.bordered)
-						.disabled(_isBusy)
-					}
+				Button {
+					_start(source)
+				} label: {
+					Label("Скачать и подписать", systemImage: "signature")
+						.frame(maxWidth: .infinity)
 				}
-				if let file = _resultFile(for: source.id) {
+				.buttonStyle(.borderedProminent)
+				.controlSize(.large)
+				.disabled(_isBusy || _certificate == nil)
+
+				let app = _signedApp(for: source.id)
+				let file = _resultFile(for: source.id)
+				if app != nil || file != nil {
+					HStack(spacing: 10) {
+						if let app {
+							Button {
+								_installApp = AnyApp(base: app)
+							} label: {
+								Label("Установить", systemImage: "arrow.down.app")
+									.lineLimit(1)
+									.frame(maxWidth: .infinity)
+							}
+						}
+						if let file {
+							ShareLink(item: file) {
+								Label("Поделиться", systemImage: "square.and.arrow.up")
+									.lineLimit(1)
+									.frame(maxWidth: .infinity)
+							}
+						}
+					}
+					.buttonStyle(.bordered)
+					.controlSize(.large)
+					.disabled(_isBusy)
+				}
+				if let file {
 					Text(file.lastPathComponent)
 						.font(.caption2)
 						.foregroundStyle(.secondary)
+						.lineLimit(1)
+						.truncationMode(.middle)
 				}
 			}
 		}
@@ -269,6 +286,8 @@ struct QuickSignView: View {
 	// MARK: Persistence
 
 	private func _load() {
+		_refreshInstallCertificatesIfNeeded()
+
 		if _storedSources.isEmpty {
 			_sources = [.shadow]
 			_saveSources()
@@ -327,6 +346,18 @@ struct QuickSignView: View {
 			return
 		}
 		_storedResults = string
+	}
+
+	/// The local install server uses a short-lived backloop.dev certificate
+	/// (~90 days) bundled at build time. Refresh it every few days so
+	/// "Установить" keeps working without rebuilding IPA Hub.
+	private func _refreshInstallCertificatesIfNeeded() {
+		let now = Date().timeIntervalSince1970
+		guard now - _sslRefreshedAt > 3 * 24 * 60 * 60 else { return }
+		FR.downloadSSLCertificates(from: "https://backloop.dev/pack.json") { success in
+			guard success else { return }
+			DispatchQueue.main.async { _sslRefreshedAt = now }
+		}
 	}
 
 	private func _saveSignedApps() {

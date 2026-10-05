@@ -78,8 +78,18 @@ extension ServerInstaller {
 			return nil
 		}
 		
-		return try? String(contentsOf: url, encoding: .utf8)
-			.trimmingCharacters(in: .whitespacesAndNewlines)
+		guard let name = try? String(contentsOf: url, encoding: .utf8)
+			.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty
+		else {
+			return nil
+		}
+		// IPA Hub: backloop.dev now ships a wildcard certificate ("*.backloop.dev").
+		// "*" is not a host iOS can reach, so the itms-services manifest was never
+		// requested and installs hung at "Ready". Any subdomain resolves to 127.0.0.1.
+		if name.hasPrefix("*.") {
+			return "local." + name.dropFirst(2)
+		}
+		return name
 	}
 }
 

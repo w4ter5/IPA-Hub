@@ -28,6 +28,17 @@ enum IPAHubStage: Equatable {
 		case .packaging: return "Собираю подписанный IPA…"
 		}
 	}
+
+	/// Overall progress of the whole run, for a single steady progress bar.
+	var fraction: Double {
+		switch self {
+		case .resolving: return 0.02
+		case .downloading(let progress): return 0.05 + 0.6 * (progress ?? 0)
+		case .importing: return 0.7
+		case .signing: return 0.8
+		case .packaging: return 0.92
+		}
+	}
 }
 
 struct IPAHubResult {
