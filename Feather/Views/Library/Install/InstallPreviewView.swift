@@ -19,6 +19,7 @@ struct InstallPreviewView: View {
 	@AppStorage("Feather.serverMethod") private var _serverMethod: Int = 0
 	@State private var _isWebviewPresenting = false
 	@State private var progressTask: Task<Void, Never>?
+	@State private var _isStuck = false // IPA Hub: iOS never asked for the manifest
 	
 	var app: AppInfoPresentable
 	@StateObject var viewModel: InstallerStatusViewModel
@@ -59,6 +60,10 @@ struct InstallPreviewView: View {
 		.onReceive(viewModel.$status) { newStatus in
 			if _installationMethod == 0 {
 				if case .ready = newStatus {
+					// IPA Hub: if iOS doesn't fetch anything, say why instead of hanging silently.
+					DispatchQueue.main.asyncAfter(deadline: .now() + 15) {
+						if case .ready = viewModel.status { _isStuck = true }
+					}
 					if _serverMethod == 0 {
 						UIApplication.shared.open(URL(string: installer.iTunesLink)!)
 					} else if _serverMethod == 1 {
@@ -66,6 +71,8 @@ struct InstallPreviewView: View {
 					}
 				}
 				
+				if case .ready = newStatus {} else { _isStuck = false }
+
 				if case .sendingPayload = newStatus, _serverMethod == 1 {
 					_isWebviewPresenting = false
 				}
@@ -111,7 +118,12 @@ struct InstallPreviewView: View {
 	
 	@ViewBuilder
 	private func _status() -> some View {
-		Label(viewModel.statusLabel, systemImage: viewModel.statusImage)
+		Label(
+			_isStuck
+				? "iOS не начала установку. Выключите VPN или фильтр DNS и нажмите «Установить» ещё раз."
+				: viewModel.statusLabel,
+			systemImage: _isStuck ? "exclamationmark.triangle" : viewModel.statusImage
+		)
 			.padding()
 			.labelStyle(.titleAndIcon)
 			.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)

@@ -18,6 +18,7 @@ struct QuickSignView: View {
 	@AppStorage("ipaHub.signedApps") private var _storedSignedApps = ""
 	@AppStorage("ipaHub.installAfterSigning") private var _installAfterSigning = true
 	@AppStorage("ipaHub.sslRefreshedAt") private var _sslRefreshedAt: Double = 0
+	@AppStorage("ipaHub.installServerMigrated") private var _installServerMigrated = false
 	@AppStorage("feather.selectedCert") private var _selectedCertificate = 0
 
 	@State private var _sources: [IPAHubSource] = []
@@ -286,6 +287,7 @@ struct QuickSignView: View {
 	// MARK: Persistence
 
 	private func _load() {
+		_useLoopbackInstallServer()
 		_refreshInstallCertificatesIfNeeded()
 
 		if _storedSources.isEmpty {
@@ -346,6 +348,19 @@ struct QuickSignView: View {
 			return
 		}
 		_storedResults = string
+	}
+
+	/// Feather's "Fully Local" install needs local.backloop.dev to resolve to
+	/// 127.0.0.1. VPN apps with fake-IP DNS (and some DNS filters) break that,
+	/// so the install hangs at "Ready". "Semi Local" + "localhost only" serves
+	/// the IPA from http://127.0.0.1 with no DNS lookup; only the small install
+	/// manifest comes from api.palera.in (Feather's built-in option).
+	/// Done once; the user can switch back in Settings → Installation.
+	private func _useLoopbackInstallServer() {
+		guard !_installServerMigrated else { return }
+		UserDefaults.standard.set(1, forKey: "Feather.serverMethod")
+		UserDefaults.standard.set(true, forKey: "Feather.ipFix")
+		_installServerMigrated = true
 	}
 
 	/// The local install server uses a short-lived backloop.dev certificate
